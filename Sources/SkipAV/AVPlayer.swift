@@ -10,6 +10,7 @@ import android.content.Context
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 
 // SKIP @nobridge
@@ -213,8 +214,27 @@ public class AVPlayer {
     func prepare(_ ctx: Context) {
     }
 
+    /// Ceiling on buffered sample bytes for one player.
+    ///
+    /// Media3's default target is `DEFAULT_VIDEO_BUFFER_SIZE` (125MB) + `DEFAULT_AUDIO_BUFFER_SIZE`
+    /// (12.5MB) ≈ 137MB, over a 50s window. On a 256MB heap two concurrent video players overcommit
+    /// it and the second one dies inside `ExoPlayerImplInternal.shouldContinueLoading`.
+    private static let maxBufferBytes = 16 * 1024 * 1024
+
     private func createMediaPlayer() -> Player {
-        let mediaPlayer = ExoPlayer.Builder(ProcessInfo.processInfo.androidContext).build()
+        /// Each player keeps the Builder's own allocator rather than a shared one:
+        /// `shouldContinueLoading` tests the allocator's *total* allocated bytes, so one allocator
+        /// across players would turn this per-player ceiling into a global one, letting a paused
+        /// player's retained buffers starve the active player.
+        let loadControl = DefaultLoadControl.Builder()
+            .setTargetBufferBytes(AVPlayer.maxBufferBytes)
+            .setBufferDurationsMs(2_000, 20_000, 500, 2_000)
+            /// Must stay false, or the time thresholds above override the byte ceiling.
+            .setPrioritizeTimeOverSizeThresholds(false)
+            .build()
+        let mediaPlayer = ExoPlayer.Builder(ProcessInfo.processInfo.androidContext)
+            .setLoadControl(loadControl)
+            .build()
         playerEventListener.player = self
         mediaPlayer.addListener(playerEventListener)
         mediaPlayer.playWhenReady = true
